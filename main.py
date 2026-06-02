@@ -25,7 +25,7 @@ INPUT_DIR = "./media"
 OUTPUT_FILE = "./data.txt"
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent"
+API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
 DELAY_BETWEEN_REQUESTS = 5  # секунд между запросами (≈12 RPM, лимит 15)
 DELAY_AFTER_429 = 90        # секунд ожидания после rate limit
@@ -88,6 +88,15 @@ def call_api(image_path):
         return result["candidates"][0]["content"]["parts"][0]["text"].strip()
 
 
+def fix_truncated_json(text):
+    """Пытается починить обрезанный JSON — закрывает незакрытые структуры."""
+    text = re.sub(r',\s*$', '', text.rstrip())
+    opens = text.count('{') - text.count('}')
+    arrays = text.count('[') - text.count(']')
+    text += ']' * arrays + '}' * opens
+    return text
+
+
 def extract_qa_from_image(image_path):
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -105,13 +114,28 @@ def extract_qa_from_image(image_path):
                     time.sleep(1)
                     print(".", end="", flush=True)
                 print()
+            elif e.code == 503:
+                wait = 15 * attempt
+                print(f"\n    [503] Перегружен — ждём {wait}с "
+                      f"(попытка {attempt}/{MAX_RETRIES})...", flush=True)
+                time.sleep(wait)
             else:
                 print(f"\n    [HTTP {e.code}] {body[:150]}")
                 return None
 
-        except json.JSONDecodeError as e:
-            print(f"\n    [JSON] Модель вернула не-JSON: {e}")
-            return None
+        except json.JSONDecodeError:
+            print(f"\n    [JSON] Обрезан — пробуем починить...", end=" ", flush=True)
+            try:
+                text2 = call_api(image_path)
+                text2 = re.sub(r"^```json\s*", "", text2)
+                text2 = re.sub(r"\s*```$", "", text2)
+                result = json.loads(fix_truncated_json(text2))
+                print("OK")
+                return result
+            except Exception:
+                print(f"не удалось (попытка {attempt}/{MAX_RETRIES})")
+            if attempt >= MAX_RETRIES:
+                return None
 
         except Exception as e:
             print(f"\n    [ERR] {e}")
@@ -139,13 +163,21 @@ def append_to_file(text, output_file):
 
 def main():
     parser = argparse.ArgumentParser(description="Извлечение вопросов из изображений через Gemini")
-    parser.add_argument("--from", dest="from_num", type=int, default=None,
+    parser.add_argument("-f", "--from", dest="from_num", type=int, default=None,
                         metavar="N", help="начать с image N (включительно)")
-    parser.add_argument("--to", dest="to_num", type=int, default=None,
+    parser.add_argument("-t", "--to", dest="to_num", type=int, default=None,
                         metavar="N", help="закончить на image N (включительно)")
-    parser.add_argument("--output", type=str, default=OUTPUT_FILE,
+    parser.add_argument("-o", "--output", type=str, default=OUTPUT_FILE,
                         metavar="FILE", help=f"файл вывода (по умолчанию: {OUTPUT_FILE})")
     args = parser.parse_args()
+
+    # Создаём файл (и папку) если не существует
+    output_dir = os.path.dirname(args.output)
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    if not os.path.exists(args.output):
+        open(args.output, "w", encoding="utf-8").close()
+        print(f"Создан файл: {args.output}")
 
     if not GEMINI_API_KEY:
         print("Ошибка: GEMINI_API_KEY не задан!")
