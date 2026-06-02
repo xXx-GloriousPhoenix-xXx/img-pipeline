@@ -1,127 +1,207 @@
 import os
 import re
-from PIL import Image
-import pytesseract
+import base64
+import json
+import time
+import urllib.request
+import urllib.error
 
-pytesseract.pytesseract.tesseract_cmd = r"F:\\Programmes\\Tesseract\\Installed\\tesseract.exe"
 
-INPUT_DIR = "./media"
-OUTPUT_FILE = "./test.txt"
+def load_dotenv(path=".env"):
+    """Загружает переменные из .env файла (без сторонних библиотек)."""
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            os.environ.setdefault(key, value)
 
-def extract_text_from_image(image_path):
-    """Извлекает текст из картинки с помощью OCR."""
-    img = Image.open(image_path)
-    text = pytesseract.image_to_string(img, lang='ukr+eng')
-    return text.strip()
+load_dotenv()
 
-def parse_question_and_answers(text):
-    """
-    Парсит текст:
-    - первая строка или блок до пустой строки - вопрос
-    - остальное - строки вида "номер | ответ" или "номер. ответ"
-    - правильный ответ помечен знаком '+'
-    """
-    lines = [line.strip() for line in text.split('\n') if line.strip()]
-    if not lines:
-        return None, None, None
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-    # Вопрос — до первой пустой строки, но у нас пустые уже удалены,
-    # поэтому берём первую строку как вопрос.
-    question = lines[0]
+API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
-    # Находим строки с ответами (начиная со второй строки)
-    answer_lines = lines[1:]
-    answers = []
-    correct_answer_text = None
+REQUESTS_PER_MINUTE = 10   # чуть меньше лимита для надёжности
+BATCH_SIZE = 10             # обрабатываем по 14 картинок
+PAUSE_BETWEEN_BATCHES = 70  # секунд паузы между батчами
 
-    for line in answer_lines:
-        # Ищем номер ответа и сам ответ
-        # Поддерживает форматы: "1 | Ответ" или "1. Ответ"
-        match = re.match(r'^\s*(\d+)\s*[\.|]\s*(.+)$', line)
-        if not match:
-            continue
+PROMPT = """На зображенні знаходиться питання тесту та кілька варіантів відповіді (зазвичай у вигляді таблиці Excel).
 
-        num = int(match.group(1))
-        answer_full = match.group(2).strip()
+Твоє завдання:
+1. Витягни точний текст питання (він зазвичай у верхній частині або в стовпці B першого рядка).
+2. Витягни всі варіанти відповідей з їх номерами.
+3. Визнач правильну відповідь — вона зазвичай позначена червоною цифрою праворуч (у стовпці "Номер Вашої відповіді"), яка збігається з номером правильного варіанту.
 
-        # Проверяем, есть ли пометка правильного ответа (+ в любом месте)
-        if '+' in answer_full:
-            correct_answer_text = answer_full.replace('+', '').strip()
-            # Убираем + из выводимого варианта
-            answer_clean = answer_full.replace('+', '').strip()
-        else:
-            answer_clean = answer_full
+Поверни результат СТРОГО у форматі JSON без будь-яких додаткових пояснень:
+{
+  "question": "Текст питання",
+  "answers": [
+    {"num": 1, "text": "Відповідь 1"},
+    {"num": 2, "text": "Відповідь 2"}
+  ],
+  "correct_num": 2
+}
 
-        answers.append((num, answer_clean))
+Важливо:
+- Текст має бути мовою оригіналу (українська/англійська).
+- correct_num — це номер правильної відповіді (червона цифра на зображенні).
+- Якщо правильна відповідь не визначена — постав null.
+- Жодного тексту крім JSON."""
 
-    # Если правильный ответ не найден, берём последний вариант как правильный (опционально)
-    # Но лучше явно отмечать '+'
-    if correct_answer_text is None and answers:
-        correct_answer_text = answers[-1][1]
 
-    return question, answers, correct_answer_text
+def encode_image(image_path):
+    with open(image_path, "rb") as f:
+        return base64.standard_b64encode(f.read()).decode("utf-8")
 
-def format_output(question, answers, correct_answer):
-    """Форматирует в нужный вид:
-    "Вопрос"
-    1. Ответ 1
-    2. Ответ 2
-    3. Ответ 3 +
-    """
-    lines = [f'"{question}"']
-    for num, ans in answers:
-        if ans == correct_answer:
-            lines.append(f"{num}. {ans} +")
-        else:
-            lines.append(f"{num}. {ans}")
+
+def get_mime_type(image_path):
+    ext = os.path.splitext(image_path)[1].lower()
+    return "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
+
+
+def extract_qa_from_image(image_path, retries=3):
+    image_data = encode_image(image_path)
+    mime_type = get_mime_type(image_path)
+
+    payload = json.dumps({
+        "contents": [
+            {
+                "parts": [
+                    {"inline_data": {"mime_type": mime_type, "data": image_data}},
+                    {"text": PROMPT}
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0,
+            "maxOutputTokens": 1024,
+        }
+    }).encode("utf-8")
+
+    url = f"{API_URL}?key={GEMINI_API_KEY}"
+
+    for attempt in range(1, retries + 1):
+        try:
+            req = urllib.request.Request(
+                url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST"
+            )
+            with urllib.request.urlopen(req) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+                text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+                text = re.sub(r"^```json\s*", "", text)
+                text = re.sub(r"\s*```$", "", text)
+                return json.loads(text)
+
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8")
+            # 429 = rate limit — ждём и повторяем
+            if e.code == 429:
+                wait = 60 * attempt
+                print(f"\n  [429] Rate limit. Ждём {wait}с (попытка {attempt}/{retries})...", end=" ")
+                time.sleep(wait)
+            else:
+                print(f"\n  HTTP Error {e.code}: {body[:200]}")
+                return None
+        except Exception as e:
+            print(f"\n  Ошибка: {e}")
+            if attempt < retries:
+                time.sleep(5)
+
+    return None
+
+
+def format_output(data):
+    lines = [f'"{data["question"]}"']
+    correct = data.get("correct_num")
+    for ans in data["answers"]:
+        marker = " +" if ans["num"] == correct else ""
+        lines.append(f'{ans["num"]}. {ans["text"]}{marker}')
     return "\n".join(lines)
 
+
 def main():
-    # Убедимся, что папка существует
+    if not GEMINI_API_KEY:
+        print("Ошибка: переменная окружения GEMINI_API_KEY не задана!")
+        print("Запустите: export GEMINI_API_KEY=your_key_here")
+        print("Получить ключ бесплатно: https://aistudio.google.com")
+        return
+
     if not os.path.exists(INPUT_DIR):
         print(f"Папка {INPUT_DIR} не найдена!")
         return
 
-    # Находим все файлы image{n}.jpeg
+    # Собираем файлы
     image_files = []
     for f in os.listdir(INPUT_DIR):
-        if f.startswith("image") and f.lower().endswith((".jpeg", ".jpg")):
-            # Извлекаем номер для сортировки
-            match = re.search(r'image(\d+)', f)
+        if f.startswith("image") and f.lower().endswith((".jpeg", ".jpg", ".png")):
+            match = re.search(r"image(\d+)", f)
             if match:
-                num = int(match.group(1))
-                image_files.append((num, f))
-
-    image_files.sort()  # сортируем по номеру
+                image_files.append((int(match.group(1)), f))
+    image_files.sort()
 
     if not image_files:
         print("Нет файлов вида image*.jpeg в ./media")
         return
 
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as out_f:
-        for num, filename in image_files:
+    total = len(image_files)
+    batches = [image_files[i:i+BATCH_SIZE] for i in range(0, total, BATCH_SIZE)]
+    total_batches = len(batches)
+    eta_minutes = (total_batches - 1) * PAUSE_BETWEEN_BATCHES // 60 + 1
+
+    print(f"Найдено файлов: {total}")
+    print(f"Батчей: {total_batches} по {BATCH_SIZE} шт.")
+    print(f"Примерное время: ~{eta_minutes} мин.\n")
+
+    results = []
+    failed = []
+
+    for batch_idx, batch in enumerate(batches, 1):
+        print(f"── Батч {batch_idx}/{total_batches} ({len(batch)} файлов) ──")
+
+        for num, filename in batch:
             img_path = os.path.join(INPUT_DIR, filename)
-            print(f"Обработка: {filename}")
+            print(f"  {filename} ...", end=" ", flush=True)
 
-            # 1. Распознаём текст
-            text = extract_text_from_image(img_path)
-            if not text:
-                print(f"  Предупреждение: не удалось извлечь текст из {filename}")
+            data = extract_qa_from_image(img_path)
+            time.sleep(6)  # ~10 запросов/мин внутри батча
+
+            if not data or not data.get("question") or not data.get("answers"):
+                print("ПРОПУЩЕНО")
+                failed.append(filename)
                 continue
 
-            # 2. Парсим вопрос и ответы
-            question, answers, correct = parse_question_and_answers(text)
-            if not question or not answers:
-                print(f"  Предупреждение: не удалось распарсить {filename}")
-                print(f"  Текст: {text[:200]}")
-                continue
+            formatted = format_output(data)
+            results.append(formatted)
+            print(f"OK — {data['question'][:55]}...")
 
-            # 3. Форматируем и записываем
-            formatted = format_output(question, answers, correct)
-            out_f.write(formatted + "\n\n")
-            print(f"  Добавлено: {question[:50]}...")
+        # Пауза между батчами (кроме последнего)
+        if batch_idx < total_batches:
+            print(f"\n  Пауза {PAUSE_BETWEEN_BATCHES}с перед следующим батчем", end="")
+            for _ in range(PAUSE_BETWEEN_BATCHES):
+                time.sleep(1)
+                print(".", end="", flush=True)
+            print()
 
-    print(f"\nГотово! Результат в {OUTPUT_FILE}")
+    # Записываем результат
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+        f.write("\n\n".join(results))
+        if results:
+            f.write("\n")
+
+    print(f"\n{'='*40}")
+    print(f"Готово! Записано: {len(results)}/{total} вопросов → {OUTPUT_FILE}")
+    if failed:
+        print(f"Пропущено ({len(failed)}): {', '.join(failed)}")
+
 
 if __name__ == "__main__":
     main()
