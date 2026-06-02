@@ -3,12 +3,12 @@ import re
 import base64
 import json
 import time
+import argparse
 import urllib.request
 import urllib.error
 
 
 def load_dotenv(path=".env"):
-    """Загружает переменные из .env файла (без сторонних библиотек)."""
     if not os.path.exists(path):
         return
     with open(path, encoding="utf-8") as f:
@@ -17,19 +17,19 @@ def load_dotenv(path=".env"):
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, _, value = line.partition("=")
-            key = key.strip()
-            value = value.strip().strip('"').strip("'")
-            os.environ.setdefault(key, value)
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 load_dotenv()
 
+INPUT_DIR = "./media"
+OUTPUT_FILE = "./data.txt"
+
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent"
 
-API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
-
-REQUESTS_PER_MINUTE = 10   # чуть меньше лимита для надёжности
-BATCH_SIZE = 10             # обрабатываем по 14 картинок
-PAUSE_BETWEEN_BATCHES = 70  # секунд паузы между батчами
+DELAY_BETWEEN_REQUESTS = 5  # секунд между запросами (≈12 RPM, лимит 15)
+DELAY_AFTER_429 = 90        # секунд ожидания после rate limit
+MAX_RETRIES = 5             # максимум попыток на один файл
 
 PROMPT = """На зображенні знаходиться питання тесту та кілька варіантів відповіді (зазвичай у вигляді таблиці Excel).
 
@@ -65,57 +65,60 @@ def get_mime_type(image_path):
     return "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
 
 
-def extract_qa_from_image(image_path, retries=3):
-    image_data = encode_image(image_path)
-    mime_type = get_mime_type(image_path)
-
+def call_api(image_path):
     payload = json.dumps({
-        "contents": [
-            {
-                "parts": [
-                    {"inline_data": {"mime_type": mime_type, "data": image_data}},
-                    {"text": PROMPT}
-                ]
-            }
-        ],
-        "generationConfig": {
-            "temperature": 0,
-            "maxOutputTokens": 1024,
-        }
+        "contents": [{
+            "parts": [
+                {"inline_data": {"mime_type": get_mime_type(image_path),
+                                 "data": encode_image(image_path)}},
+                {"text": PROMPT}
+            ]
+        }],
+        "generationConfig": {"temperature": 0, "maxOutputTokens": 1024}
     }).encode("utf-8")
 
-    url = f"{API_URL}?key={GEMINI_API_KEY}"
+    req = urllib.request.Request(
+        f"{API_URL}?key={GEMINI_API_KEY}",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+    with urllib.request.urlopen(req) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+        return result["candidates"][0]["content"]["parts"][0]["text"].strip()
 
-    for attempt in range(1, retries + 1):
+
+def extract_qa_from_image(image_path):
+    for attempt in range(1, MAX_RETRIES + 1):
         try:
-            req = urllib.request.Request(
-                url,
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST"
-            )
-            with urllib.request.urlopen(req) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
-                text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
-                text = re.sub(r"^```json\s*", "", text)
-                text = re.sub(r"\s*```$", "", text)
-                return json.loads(text)
+            text = call_api(image_path)
+            text = re.sub(r"^```json\s*", "", text)
+            text = re.sub(r"\s*```$", "", text)
+            return json.loads(text)
 
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8")
-            # 429 = rate limit — ждём и повторяем
             if e.code == 429:
-                wait = 60 * attempt
-                print(f"\n  [429] Rate limit. Ждём {wait}с (попытка {attempt}/{retries})...", end=" ")
-                time.sleep(wait)
+                print(f"\n    [429] Rate limit — ждём {DELAY_AFTER_429}с "
+                      f"(попытка {attempt}/{MAX_RETRIES})", end="", flush=True)
+                for _ in range(DELAY_AFTER_429):
+                    time.sleep(1)
+                    print(".", end="", flush=True)
+                print()
             else:
-                print(f"\n  HTTP Error {e.code}: {body[:200]}")
+                print(f"\n    [HTTP {e.code}] {body[:150]}")
                 return None
-        except Exception as e:
-            print(f"\n  Ошибка: {e}")
-            if attempt < retries:
-                time.sleep(5)
 
+        except json.JSONDecodeError as e:
+            print(f"\n    [JSON] Модель вернула не-JSON: {e}")
+            return None
+
+        except Exception as e:
+            print(f"\n    [ERR] {e}")
+            if attempt < MAX_RETRIES:
+                time.sleep(10)
+
+    print(f"\n    Все {MAX_RETRIES} попытки исчерпаны")
     return None
 
 
@@ -128,77 +131,74 @@ def format_output(data):
     return "\n".join(lines)
 
 
+def append_to_file(text, output_file):
+    """Дописывает один результат в файл сразу после получения."""
+    with open(output_file, "a", encoding="utf-8") as f:
+        f.write(text + "\n\n")
+
+
 def main():
+    parser = argparse.ArgumentParser(description="Извлечение вопросов из изображений через Gemini")
+    parser.add_argument("--from", dest="from_num", type=int, default=None,
+                        metavar="N", help="начать с image N (включительно)")
+    parser.add_argument("--to", dest="to_num", type=int, default=None,
+                        metavar="N", help="закончить на image N (включительно)")
+    parser.add_argument("--output", type=str, default=OUTPUT_FILE,
+                        metavar="FILE", help=f"файл вывода (по умолчанию: {OUTPUT_FILE})")
+    args = parser.parse_args()
+
     if not GEMINI_API_KEY:
-        print("Ошибка: переменная окружения GEMINI_API_KEY не задана!")
-        print("Запустите: export GEMINI_API_KEY=your_key_here")
-        print("Получить ключ бесплатно: https://aistudio.google.com")
+        print("Ошибка: GEMINI_API_KEY не задан!")
+        print("Создайте .env файл с: GEMINI_API_KEY=ваш_ключ")
         return
 
     if not os.path.exists(INPUT_DIR):
         print(f"Папка {INPUT_DIR} не найдена!")
         return
 
-    # Собираем файлы
+    # Собираем и фильтруем файлы по диапазону
     image_files = []
     for f in os.listdir(INPUT_DIR):
         if f.startswith("image") and f.lower().endswith((".jpeg", ".jpg", ".png")):
             match = re.search(r"image(\d+)", f)
             if match:
-                image_files.append((int(match.group(1)), f))
+                n = int(match.group(1))
+                if (args.from_num is None or n >= args.from_num) and \
+                   (args.to_num   is None or n <= args.to_num):
+                    image_files.append((n, f))
     image_files.sort()
 
     if not image_files:
-        print("Нет файлов вида image*.jpeg в ./media")
+        print("Нет файлов, подходящих под указанный диапазон")
         return
 
     total = len(image_files)
-    batches = [image_files[i:i+BATCH_SIZE] for i in range(0, total, BATCH_SIZE)]
-    total_batches = len(batches)
-    eta_minutes = (total_batches - 1) * PAUSE_BETWEEN_BATCHES // 60 + 1
+    range_str = f"image{image_files[0][0]} → image{image_files[-1][0]}"
+    print(f"Файлов к обработке: {total} ({range_str})")
+    print(f"Вывод: {args.output}")
+    print(f"Задержка между запросами: {DELAY_BETWEEN_REQUESTS}с\n")
 
-    print(f"Найдено файлов: {total}")
-    print(f"Батчей: {total_batches} по {BATCH_SIZE} шт.")
-    print(f"Примерное время: ~{eta_minutes} мин.\n")
-
-    results = []
     failed = []
 
-    for batch_idx, batch in enumerate(batches, 1):
-        print(f"── Батч {batch_idx}/{total_batches} ({len(batch)} файлов) ──")
+    for idx, (num, filename) in enumerate(image_files, 1):
+        img_path = os.path.join(INPUT_DIR, filename)
+        print(f"  [{idx}/{total}] {filename} ...", end=" ", flush=True)
 
-        for num, filename in batch:
-            img_path = os.path.join(INPUT_DIR, filename)
-            print(f"  {filename} ...", end=" ", flush=True)
+        data = extract_qa_from_image(img_path)
 
-            data = extract_qa_from_image(img_path)
-            time.sleep(6)  # ~10 запросов/мин внутри батча
-
-            if not data or not data.get("question") or not data.get("answers"):
-                print("ПРОПУЩЕНО")
-                failed.append(filename)
-                continue
-
+        if not data or not data.get("question") or not data.get("answers"):
+            print("ПРОПУЩЕНО")
+            failed.append(filename)
+        else:
             formatted = format_output(data)
-            results.append(formatted)
+            append_to_file(formatted, args.output)  # ← сразу пишем в файл
             print(f"OK — {data['question'][:55]}...")
 
-        # Пауза между батчами (кроме последнего)
-        if batch_idx < total_batches:
-            print(f"\n  Пауза {PAUSE_BETWEEN_BATCHES}с перед следующим батчем", end="")
-            for _ in range(PAUSE_BETWEEN_BATCHES):
-                time.sleep(1)
-                print(".", end="", flush=True)
-            print()
+        if idx < total:
+            time.sleep(DELAY_BETWEEN_REQUESTS)
 
-    # Записываем результат
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        f.write("\n\n".join(results))
-        if results:
-            f.write("\n")
-
-    print(f"\n{'='*40}")
-    print(f"Готово! Записано: {len(results)}/{total} вопросов → {OUTPUT_FILE}")
+    print(f"\n{'='*45}")
+    print(f"Готово! Обработано: {total - len(failed)}/{total} → {args.output}")
     if failed:
         print(f"Пропущено ({len(failed)}): {', '.join(failed)}")
 
