@@ -56,8 +56,6 @@ API_KEYS = load_api_keys()
 MODELS = [
     "gemini-2.5-flash-lite",
     "gemini-2.5-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-pro"
 ]
 
 DELAY_BETWEEN_REQUESTS = 5
@@ -169,6 +167,10 @@ def call_api_with_fallback(image_path):
                         exhausted[key_idx].add(model_idx)
                         time.sleep(2)
                         continue  # следующая модель / ключ
+                    elif e.code == 404:
+                        print(f"404 (модель недоступна — пропускаем)")
+                        exhausted[key_idx].add(model_idx)
+                        continue
                     else:
                         print(f"HTTP {e.code}: {body[:150]}")
                         return None  # не лимитная ошибка — смысла повторять нет

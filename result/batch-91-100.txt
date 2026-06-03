@@ -1,0 +1,14 @@
+91. "Розгортання якої служби резервного копіювання показано на рисунку?"
+1. Managed Backup Service
+2. Replication Backup service +
+3. Remote Backup Service
+4. Cloud-to-cloud Backup Service
+5. 
+
+92. "На рисунку показаний прийом забезпечення відмовостійкості:"
+1. Compute-based +
+2. Network-based
+3. Storage-based
+4. Cloud-based
+5. Hypervisor-based
+
