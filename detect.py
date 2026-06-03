@@ -1,18 +1,21 @@
 import re
 from pathlib import Path
 
-# Указываем путь к файлу, который нужно проверить
 FILE_TO_CHECK = Path("./result/merged.txt")
 
-def find_questions_without_answers():
+def analyze_file():
     if not FILE_TO_CHECK.exists():
-        print(f"Ошибка: Файл '{FILE_TO_CHECK}' не найден. Сначала запустите merge.py!")
+        print(f"Ошибка: Файл '{FILE_TO_CHECK}' не найден!")
         return
 
     with open(FILE_TO_CHECK, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    # Делим файл на блоки, каждый из которых начинается с "Номер. "Вопрос""
+    # 1. Ищем полностью отсутствующие вопросы (-7-, -10-)
+    missing_matches = re.findall(r'^-(\d+)-$', content, re.MULTILINE)
+    missing_questions = sorted([int(num) for num in missing_matches])
+
+    # 2. Ищем вопросы без отмеченного правильного ответа (+)
     question_blocks = re.split(r'(?=\n\d+\.\s*\")', content)
     unanswered_questions = []
 
@@ -21,24 +24,31 @@ def find_questions_without_answers():
         if not block:
             continue
 
-        # Извлекаем номер вопроса
         match_num = re.match(r'^(\d+)\.', block)
         if match_num:
             q_num = match_num.group(1)
-            
-            # Если в блоке вопроса нет знака '+', значит ответ не отмечен
             if '+' not in block:
                 unanswered_questions.append(int(q_num))
-
-    # Сортируем номера по порядку
+    
     unanswered_questions.sort()
 
-    # Выводим результат
-    if unanswered_questions:
-        print(f"\nВнимание! Найдено вопросов без отмеченного ответа: {len(unanswered_questions)}")
-        print(f"Номера вопросов: {unanswered_questions}")
+    # Вывод итогового отчета
+    print("="*50)
+    print("ОТЧЕТ ПО АНАЛИЗУ ТЕСТОВ")
+    print("="*50)
+    
+    if missing_questions:
+        print(f"❌ Вообще отсутствуют в базе ({len(missing_questions)} шт):")
+        print(f"   {missing_questions}\n")
     else:
-        print("\nПроверка пройдена! Во всех вопросах успешно найдены ответы с плюсом (+).")
+        print("✅ Все вопросы присутствуют в структуре файла.\n")
+
+    if unanswered_questions:
+        print(f"⚠️ Вопросы без отмеченного от '+' (всего {len(unanswered_questions)} шт):")
+        print(f"   {unanswered_questions}")
+    else:
+        print("✅ Во всех существующих вопросах проставлены правильные ответы!")
+    print("="*50)
 
 if __name__ == "__main__":
-    find_questions_without_answers()
+    analyze_file()
