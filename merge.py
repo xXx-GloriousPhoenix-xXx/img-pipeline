@@ -1,44 +1,43 @@
 import os
 import re
+from pathlib import Path
 
-SOURCE_DIR = "./result/batches" 
-DEST_PATH = "./result/merged.txt"
+SOURCE_DIR = Path("./result/batches")
+DEST_PATH = Path("./result/merged.txt")
 
 def extract_numbers(filename):
-    """Извлекает n и m из чистого имени файла batch-n-m.txt для правильной сортировки."""
-    # os.listdir возвращает только имя файла, например "batch-1-2.txt"
+    """Извлекает n и m из имени файла batch-n-m.txt для правильной сортировки."""
     match = re.match(r"batch-(\d+)-(\d+)\.txt", filename)
     if match:
         return int(match.group(1)), int(match.group(2))
     return (float('inf'), float('inf'))
 
 def process_and_merge():
-    # Проверяем, существует ли папка
-    if not os.path.exists(SOURCE_DIR):
+    if not SOURCE_DIR.exists():
         print(f"Ошибка: Папка '{SOURCE_DIR}' не найдена!")
         return
 
-    # Находим файлы в нужной папке
+    # Читаем только файлы, подходящие под маску
     files = [f for f in os.listdir(SOURCE_DIR) if f.startswith('batch-') and f.endswith('.txt')]
     
     if not files:
-        print(f"В папке '{SOURCE_DIR}' не найдено файлов, начинающихся на 'batch-' и с расширением '.txt'")
+        print(f"В папке '{SOURCE_DIR}' не найдено файлов 'batch-*.txt'")
         return
 
-    # Сортируем их по n и m
+    # Сортируем по числам n и m
     files.sort(key=extract_numbers)
     
     global_question_counter = 1
-    output_lines = []
+    output_blocks = []
     
     for filename in files:
         print(f"Обработка файла: {filename}")
-        # Читаем файл, склеивая путь к папке и имя файла
-        full_path = os.path.join(SOURCE_DIR, filename)
-        with open(full_path, 'r', encoding='utf-8') as f:
+        file_path = SOURCE_DIR / filename
+        
+        with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
             
-        # Разбиваем файл на блоки по вопросам или маркерам пропусков
+        # Делим текст на блоки (вопросы или маркеры пропусков)
         blocks = re.split(r'(?=\n(?:\"|\-\d+\-))', content.strip())
         
         for block in blocks:
@@ -46,15 +45,13 @@ def process_and_merge():
             if not block:
                 continue
                 
-            # Проверяем маркер пропуска (например, "-10-")
+            # Проверяем маркер пропуска (например, "-7-")
             missing_match = re.match(r'^-(\d+)-$', block)
             if missing_match:
                 missing_num = int(missing_match.group(1))
                 if global_question_counter < missing_num:
                     global_question_counter = missing_num
-                output_lines.append(f"\n-{missing_num}-\n")
-                # Здесь убираем прибавление счетчика в конце цикла для пропуска,
-                # чтобы следующий вопрос стал именно missing_num + 1
+                output_blocks.append(f"-{missing_num}-")
                 global_question_counter += 1
                 continue
                 
@@ -64,21 +61,24 @@ def process_and_merge():
             if numbered_match:
                 current_num = int(numbered_match.group(1))
                 global_question_counter = current_num
-                output_lines.append(block)
+                output_blocks.append(block)
             else:
                 if block.startswith('"'):
                     formatted_block = f"{global_question_counter}. {block}"
-                    output_lines.append(formatted_block)
+                    output_blocks.append(formatted_block)
                 else:
-                    output_lines.append(block)
+                    output_blocks.append(block)
             
             global_question_counter += 1
 
-    # Записываем результат в итоговый файл рядом со скриптом
+    # Создаем папку result, если её нет
+    DEST_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    # Сохраняем с красивыми двойными переносами между вопросами
     with open(DEST_PATH, 'w', encoding='utf-8') as out_f:
-        out_f.write("\n\n".join(output_lines))
+        out_f.write("\n\n".join(output_blocks))
         
-    print("\nГотово!")
+    print(f"\nСлияние завершено! Файл сохранен в: {DEST_PATH}")
 
 if __name__ == "__main__":
     process_and_merge()
