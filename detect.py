@@ -1,14 +1,20 @@
 import re
+import argparse
 from pathlib import Path
 
-FILE_TO_CHECK = Path("./result/merged.txt")
+# Дефолтный путь, если параметр не передан
+DEFAULT_FILE = Path("./result/merged.txt")
 
-def analyze_file():
-    if not FILE_TO_CHECK.exists():
-        print(f"Ошибка: Файл '{FILE_TO_CHECK}' не найден!")
+def analyze_file(file_path):
+    path = Path(file_path)
+    
+    if not path.exists():
+        print(f"❌ Ошибка: Файл '{path}' не найден!")
         return
 
-    with open(FILE_TO_CHECK, 'r', encoding='utf-8') as f:
+    print(f"📖 Анализ файла: {path.resolve()}\n")
+
+    with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
 
     # 1. Ищем полностью отсутствующие вопросы (-7-, -10-)
@@ -51,4 +57,18 @@ def analyze_file():
     print("="*50)
 
 if __name__ == "__main__":
-    analyze_file()
+    # Настраиваем парсер аргументов командной строки
+    parser = argparse.ArgumentParser(description="Скрипт для валидации собранных тестов.")
+    
+    # Добавляем опциональный аргумент --file (или сокращенно -f)
+    parser.add_argument(
+        '-f', '--file', 
+        type=str, 
+        default=str(DEFAULT_FILE),
+        help=f"Путь к проверяемому файлу (по умолчанию: {DEFAULT_FILE})"
+    )
+    
+    args = parser.parse_args()
+    
+    # Запуск анализа
+    analyze_file(args.file)
