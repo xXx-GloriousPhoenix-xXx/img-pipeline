@@ -1,0 +1,71 @@
+101. "Яка техніка забезпечення відмовостійкості показана на рисунку?"
+1. Storage resiliency using virtualization
+2. Multipathing
+3. Deduplication
+4. Erasure coding +
+5. RAID
+
+102. "Вкажіть методи забезпечення відмовостійкості додатків"
+1. Graceful degradation
+2. Persistent state model
+3. Fault detection and retry logic
+4. Check pointing
+5. Усі зазначені вище +
+
+103. "При застосуванні яких методів програма підтримує обмежену функціональність, навіть якщо деякі модулі або допоміжні служби недоступні, що не призводить до виходу з ладу всієї програми?"
+1. Graceful degradation +
+2. Persistent state model
+3. Fault detection and retry logic
+4. Check pointing
+5. Усі зазначені вище
+
+104. "Вкажіть методи забезпечення відмовостійкості додатків"
+1. Graceful degradation
+2. Persistent state model
+3. Fault detection and retry logic
+4. Check pointing
+5. Усі зазначені вище +
+
+105. "Яка техніка забезпечення відмовостійкості показана на рисунку?"
+1. Multipathing
+2. Persistent state model +
+3. Storage resiliency using virtualization
+4. Fault detection and retry logic
+5. Check pointing
+
+106. "Яка техніке забезпечення відмовостійкості дозволяє відкат до попереднього стану та продовження обробки, що забезпечує захист від тимчасової недоступності?"
+1. Multipathing
+2. Persistent state model
+3. Storage resiliency using virtualization
+4. Fault detection and retry logic
+5. Check pointing +
+
+107. "Який показник визначає час, необхідний для відновлення даних із резервної копії?"
+1. RTO +
+2. TTL
+3. RPO
+4. State-checkpoint
+5. TRO
+6. Backup time
+
+108. "Що таке копія виробничих даних, створена та збережена виключно з метою відновлення втрачених або пошкоджених даних?"
+1. Архів
+2. Версія
+3. RPO
+4. Репліка
+5. Резервна копія +
+
+109. "Яка технологія дозволяє створити копію всього віртуального диска та конфігураційних даних, пов'язаних із певною віртуальною машиною?"
+1. що базується на використанні агента
+2. Image-level +
+3. Block-level
+4. Object-level
+5. ROBO backup
+
+110. "При якому підході виконання резервного копіювання на кількох віртуальних машинах в обчислювальній системі може споживати багато ресурсів і призвести до конкуренції за ресурси?"
+1. Image-level
+2. Block-level
+3. Object-based
+4. Agent-based +
+5. ROBO backup
+

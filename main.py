@@ -31,8 +31,6 @@ OUTPUT_FILE = "./data.txt"
 #                                       GEMINI_API_KEY_2=key2
 def load_api_keys():
     keys = []
-
-    # 1. Нумерованные переменные GEMINI_API_KEY_1, GEMINI_API_KEY_2, ...
     i = 1
     while True:
         k = os.environ.get(f"GEMINI_API_KEY_{i}", "").strip()
@@ -40,15 +38,12 @@ def load_api_keys():
             break
         keys.append(k)
         i += 1
-
-    # 2. Основная переменная (один ключ или несколько через запятую)
     main = os.environ.get("GEMINI_API_KEY", "").strip()
     if main:
         for k in main.split(","):
             k = k.strip()
             if k and k not in keys:
                 keys.append(k)
-
     return keys
 
 API_KEYS = load_api_keys()
@@ -59,8 +54,6 @@ MODELS = [
 ]
 
 DELAY_BETWEEN_REQUESTS = 5
-DELAY_AFTER_ALL_KEYS_EXHAUSTED = 90
-MAX_RETRIES = 5
 
 PROMPT = """На зображенні знаходиться питання тесту та кілька варіантів відповіді (зазвичай у вигляді таблиці Excel).
 
@@ -96,12 +89,31 @@ def get_mime_type(image_path):
     return "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
 
 
+# ---------------------------------------------------------------------------
+# Глобальный курсор — указывает на текущий рабочий слот (ключ × модель).
+# Продвигается вперёд только при 429/404.
+# При успехе остаётся на месте — следующий запрос стартует с того же слота.
+# Если прошёл полный круг без единого успеха — скрипт завершает работу.
+# ---------------------------------------------------------------------------
+_cursor = {"key": 0, "model": 0}
+
+
+def _advance_cursor():
+    """Сдвигает курсор на следующий слот (по кругу)."""
+    _cursor["model"] += 1
+    if _cursor["model"] >= len(MODELS):
+        _cursor["model"] = 0
+        _cursor["key"] += 1
+    if _cursor["key"] >= len(API_KEYS):
+        _cursor["key"] = 0
+
+
 def call_api_with_fallback(image_path):
     """
-    Перебирает все комбинации (ключ × модель).
-    Порядок: для каждого ключа пробуем все модели по очереди.
-    429 → следующая модель на том же ключе → если все модели 429 → следующий ключ.
-    Если все ключи и модели исчерпаны → ждём и повторяем с начала.
+    Начинает с текущей позиции курсора.
+    429/404 → курсор сдвигается, пробуем следующий слот.
+    Успех   → курсор остаётся, возвращаем результат.
+    Если прошли все слоты по кругу без успеха → возвращаем None и завершаем.
     """
     if not API_KEYS:
         print("\n    [ERR] Нет доступных API ключей!")
@@ -123,78 +135,54 @@ def call_api_with_fallback(image_path):
     }
     payload = json.dumps(payload_dict).encode("utf-8")
 
-    # exhausted[key_idx] = set of model indices that вернули 429 для этого ключа
-    exhausted = {i: set() for i in range(len(API_KEYS))}
+    total_slots = len(API_KEYS) * len(MODELS)
 
-    retries = 0
-    while retries < MAX_RETRIES:
+    for attempt in range(total_slots):
+        key_idx    = _cursor["key"]
+        model_idx  = _cursor["model"]
+        api_key    = API_KEYS[key_idx]
+        model_name = MODELS[model_idx]
+        key_label  = f"key[{key_idx + 1}/{len(API_KEYS)}]"
 
-        made_any_attempt = False
+        print(f"\n    Пробуем {key_label} + {model_name} ...", end=" ", flush=True)
 
-        for key_idx, api_key in enumerate(API_KEYS):
-            for model_idx, model_name in enumerate(MODELS):
+        api_url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model_name}:generateContent?key={api_key}"
+        )
+        req = urllib.request.Request(
+            api_url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
 
-                if model_idx in exhausted[key_idx]:
-                    continue  # эта модель уже выдала 429 для этого ключа
+        try:
+            with urllib.request.urlopen(req) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+                text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+                print("OK")
+                return text  # курсор НЕ сдвигаем
 
-                made_any_attempt = True
-                api_url = (
-                    f"https://generativelanguage.googleapis.com/v1beta/models/"
-                    f"{model_name}:generateContent?key={api_key}"
-                )
-                req = urllib.request.Request(
-                    api_url,
-                    data=payload,
-                    headers={"Content-Type": "application/json"},
-                    method="POST"
-                )
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8")
 
-                key_label = f"key[{key_idx + 1}/{len(API_KEYS)}]"
-                print(f"\n    Пробуем {key_label} + {model_name} ...", end=" ", flush=True)
+            if e.code == 429:
+                print("429 (лимит)")
+                _advance_cursor()
+                time.sleep(2)
+            elif e.code == 404:
+                print("404 (модель недоступна)")
+                _advance_cursor()
+            else:
+                print(f"HTTP {e.code}: {body[:150]}")
+                return None  # не лимитная ошибка — дальше нет смысла
 
-                try:
-                    with urllib.request.urlopen(req) as resp:
-                        result = json.loads(resp.read().decode("utf-8"))
-                        text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
-                        print("OK")
-                        return text
+        except Exception as err:
+            print(f"ERR: {err}")
+            return None
 
-                except urllib.error.HTTPError as e:
-                    body = e.read().decode("utf-8")
-
-                    if e.code == 429:
-                        print(f"429 (лимит)")
-                        exhausted[key_idx].add(model_idx)
-                        time.sleep(2)
-                        continue  # следующая модель / ключ
-                    elif e.code == 404:
-                        print(f"404 (модель недоступна — пропускаем)")
-                        exhausted[key_idx].add(model_idx)
-                        continue
-                    else:
-                        print(f"HTTP {e.code}: {body[:150]}")
-                        return None  # не лимитная ошибка — смысла повторять нет
-
-                except Exception as err:
-                    print(f"ERR: {err}")
-                    return None
-
-        if not made_any_attempt:
-            # Все комбинации ключ+модель истощены — ждём и сбрасываем счётчики
-            retries += 1
-            if retries < MAX_RETRIES:
-                print(
-                    f"\n    [!] Все ключи и модели исчерпали лимит. "
-                    f"Ждём {DELAY_AFTER_ALL_KEYS_EXHAUSTED}с "
-                    f"(попытка {retries}/{MAX_RETRIES})..."
-                )
-                time.sleep(DELAY_AFTER_ALL_KEYS_EXHAUSTED)
-                # Сбрасываем exhausted — лимиты могли обновиться
-                exhausted = {i: set() for i in range(len(API_KEYS))}
-        # else: был хотя бы один attempt (всё в 429), но не все исчерпаны —
-        # продолжаем внешний while без инкремента retries
-
-    print("\n    [ERR] Достигнут максимум попыток.")
+    print("\n    [ERR] Все ключи и модели исчерпали лимит — завершение работы.")
     return None
 
 
@@ -257,6 +245,8 @@ def main():
         return
 
     print(f"Загружено API ключей: {len(API_KEYS)}")
+    total_slots = len(API_KEYS) * len(MODELS)
+    print(f"Всего слотов (ключ × модель): {total_slots}")
 
     if not os.path.exists(INPUT_DIR):
         print(f"Папка {INPUT_DIR} не найдена!")
@@ -291,8 +281,14 @@ def main():
 
         data = extract_qa_from_image(img_path)
 
-        if not data or not data.get("question") or not data.get("answers"):
-            print(" → ПРОПУЩЕНО")
+        if data is None:
+            # None от call_api означает либо фатальную ошибку, либо все слоты исчерпаны
+            print(" → ОСТАНОВКА")
+            failed.append(filename)
+            break  # прекращаем обработку — продолжать нет смысла
+
+        if not data.get("question") or not data.get("answers"):
+            print(" → ПРОПУЩЕНО (пустой ответ)")
             failed.append(filename)
         else:
             formatted = format_output(data, question_num=num)
@@ -305,7 +301,7 @@ def main():
     print(f"\n{'='*45}")
     print(f"Готово! Обработано: {total - len(failed)}/{total} → {args.output}")
     if failed:
-        print(f"Пропущено ({len(failed)}): {', '.join(failed)}")
+        print(f"Пропущено/остановлено ({len(failed)}): {', '.join(failed)}")
 
 
 if __name__ == "__main__":
