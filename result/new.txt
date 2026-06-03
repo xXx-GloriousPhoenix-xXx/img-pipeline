@@ -1,0 +1,9 @@
+
+
+90. "Який відмовостійкий механізм у високодоступному дизайні програми реалізовано в коді для обробки запитів до сервісу, який тимчасово не працює?"
+1. Checkpointing
+2. Monitoring Application Availability
+3. Retry Degradation +
+4. Retry Logic
+5. Graceful Degradation
+

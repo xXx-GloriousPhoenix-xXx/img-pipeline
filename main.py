@@ -24,9 +24,35 @@ load_dotenv()
 INPUT_DIR = "./media"
 OUTPUT_FILE = "./data.txt"
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+# Поддержка нескольких ключей:
+# В .env можно задать либо один ключ:   GEMINI_API_KEY=key1
+# либо несколько через запятую:         GEMINI_API_KEY=key1,key2,key3
+# либо нумерованные:                    GEMINI_API_KEY_1=key1
+#                                       GEMINI_API_KEY_2=key2
+def load_api_keys():
+    keys = []
 
-# Список доступных моделей для ротации (от быстрой/дешевой к более мощным)
+    # 1. Нумерованные переменные GEMINI_API_KEY_1, GEMINI_API_KEY_2, ...
+    i = 1
+    while True:
+        k = os.environ.get(f"GEMINI_API_KEY_{i}", "").strip()
+        if not k:
+            break
+        keys.append(k)
+        i += 1
+
+    # 2. Основная переменная (один ключ или несколько через запятую)
+    main = os.environ.get("GEMINI_API_KEY", "").strip()
+    if main:
+        for k in main.split(","):
+            k = k.strip()
+            if k and k not in keys:
+                keys.append(k)
+
+    return keys
+
+API_KEYS = load_api_keys()
+
 MODELS = [
     "gemini-2.5-flash-lite",
     "gemini-2.5-flash",
@@ -35,7 +61,7 @@ MODELS = [
 ]
 
 DELAY_BETWEEN_REQUESTS = 5
-DELAY_AFTER_429 = 90
+DELAY_AFTER_ALL_KEYS_EXHAUSTED = 90
 MAX_RETRIES = 5
 
 PROMPT = """На зображенні знаходиться питання тесту та кілька варіантів відповіді (зазвичай у вигляді таблиці Excel).
@@ -74,9 +100,15 @@ def get_mime_type(image_path):
 
 def call_api_with_fallback(image_path):
     """
-    Делает запрос к API. Если ловит 429, переключается на следующую модель.
-    Если все модели исчерпаны, ждет DELAY_AFTER_429 и пробует снова с первой модели.
+    Перебирает все комбинации (ключ × модель).
+    Порядок: для каждого ключа пробуем все модели по очереди.
+    429 → следующая модель на том же ключе → если все модели 429 → следующий ключ.
+    Если все ключи и модели исчерпаны → ждём и повторяем с начала.
     """
+    if not API_KEYS:
+        print("\n    [ERR] Нет доступных API ключей!")
+        return None
+
     payload_dict = {
         "contents": [{
             "parts": [
@@ -85,63 +117,82 @@ def call_api_with_fallback(image_path):
                 {"text": PROMPT}
             ]
         }],
-        "generationConfig": {"temperature": 0, "maxOutputTokens": 1024}
+        "generationConfig": {
+            "temperature": 0,
+            "maxOutputTokens": 1024,
+            "responseMimeType": "application/json"
+        }
     }
-    
-    # Чтобы гарантировать JSON от Gemini 2.5/1.5, просим structured output
-    payload_dict["generationConfig"]["responseMimeType"] = "application/json"
-    
     payload = json.dumps(payload_dict).encode("utf-8")
 
-    current_model_idx = 0
-    retries = 0
+    # exhausted[key_idx] = set of model indices that вернули 429 для этого ключа
+    exhausted = {i: set() for i in range(len(API_KEYS))}
 
+    retries = 0
     while retries < MAX_RETRIES:
-        model_name = MODELS[current_model_idx]
-        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
-        
-        req = urllib.request.Request(
-            f"{api_url}?key={GEMINI_API_KEY}",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST"
-        )
-        
-        try:
-            with urllib.request.urlopen(req) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
-                return result["candidates"][0]["content"]["parts"][0]["text"].strip()
-                
-        except urllib.error.HTTPError as e:
-            body = e.read().decode("utf-8")
-            
-            # Если поймали лимит запросов (Rate Limit)
-            if e.code == 429:
-                print(f"\n    [HTTP 429] На модели {model_name} закончился лимит.")
-                
-                # Переходим к следующей модели в списке
-                if current_model_idx < len(MODELS) - 1:
-                    current_model_idx += 1
-                    print(f"    Переключаемся на следующую модель: {MODELS[current_model_idx]}...")
-                    time.sleep(2) # небольшая пауза перед переключением
-                    continue
-                else:
-                    # Если все модели из списка выдали 429
-                    retries += 1
-                    current_model_idx = 0 # Сбрасываем на первую модель для следующей попытки
-                    if retries < MAX_RETRIES:
-                        print(f"    [!] Все модели исчерпали лимит. Ожидаем {DELAY_AFTER_429} секунд (Попытка {retries}/{MAX_RETRIES})...")
-                        time.sleep(DELAY_AFTER_429)
-                    continue
-            else:
-                # Другие HTTP ошибки (например, 400, 403, 500) не завязаны на лимиты — выходим
-                print(f"\n    [HTTP {e.code}] {body[:200]}")
-                return None
-        except Exception as e:
-            print(f"\n    [ERR в call_api] {e}")
-            return None
-            
-    print("\n    [ERR] Достигнут максимум попыток. Не удалось получить ответ.")
+
+        made_any_attempt = False
+
+        for key_idx, api_key in enumerate(API_KEYS):
+            for model_idx, model_name in enumerate(MODELS):
+
+                if model_idx in exhausted[key_idx]:
+                    continue  # эта модель уже выдала 429 для этого ключа
+
+                made_any_attempt = True
+                api_url = (
+                    f"https://generativelanguage.googleapis.com/v1beta/models/"
+                    f"{model_name}:generateContent?key={api_key}"
+                )
+                req = urllib.request.Request(
+                    api_url,
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST"
+                )
+
+                key_label = f"key[{key_idx + 1}/{len(API_KEYS)}]"
+                print(f"\n    Пробуем {key_label} + {model_name} ...", end=" ", flush=True)
+
+                try:
+                    with urllib.request.urlopen(req) as resp:
+                        result = json.loads(resp.read().decode("utf-8"))
+                        text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+                        print("OK")
+                        return text
+
+                except urllib.error.HTTPError as e:
+                    body = e.read().decode("utf-8")
+
+                    if e.code == 429:
+                        print(f"429 (лимит)")
+                        exhausted[key_idx].add(model_idx)
+                        time.sleep(2)
+                        continue  # следующая модель / ключ
+                    else:
+                        print(f"HTTP {e.code}: {body[:150]}")
+                        return None  # не лимитная ошибка — смысла повторять нет
+
+                except Exception as err:
+                    print(f"ERR: {err}")
+                    return None
+
+        if not made_any_attempt:
+            # Все комбинации ключ+модель истощены — ждём и сбрасываем счётчики
+            retries += 1
+            if retries < MAX_RETRIES:
+                print(
+                    f"\n    [!] Все ключи и модели исчерпали лимит. "
+                    f"Ждём {DELAY_AFTER_ALL_KEYS_EXHAUSTED}с "
+                    f"(попытка {retries}/{MAX_RETRIES})..."
+                )
+                time.sleep(DELAY_AFTER_ALL_KEYS_EXHAUSTED)
+                # Сбрасываем exhausted — лимиты могли обновиться
+                exhausted = {i: set() for i in range(len(API_KEYS))}
+        # else: был хотя бы один attempt (всё в 429), но не все исчерпаны —
+        # продолжаем внешний while без инкремента retries
+
+    print("\n    [ERR] Достигнут максимум попыток.")
     return None
 
 
@@ -150,14 +201,13 @@ def extract_qa_from_image(image_path):
         text = call_api_with_fallback(image_path)
         if not text:
             return None
-            
-        # Очищаем от возможных markdown-тегов (хотя responseMimeType должен вернуть чистый JSON)
+
         text = re.sub(r"^```json\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
         return json.loads(text)
 
     except json.JSONDecodeError:
-        print(f"\n    [JSON] Модель вернула невалидный JSON — пропускаем")
+        print(f"\n    [JSON] Невалидный JSON — пропускаем")
         return None
     except Exception as e:
         print(f"\n    [ERR] {e}")
@@ -196,10 +246,15 @@ def main():
         open(args.output, "w", encoding="utf-8").close()
         print(f"Создан файл: {args.output}")
 
-    if not GEMINI_API_KEY:
-        print("Ошибка: GEMINI_API_KEY не задан!")
-        print("Создайте .env файл с: GEMINI_API_KEY=ваш_ключ")
+    if not API_KEYS:
+        print("Ошибка: API ключи не найдены!")
+        print("Добавьте в .env один из вариантов:")
+        print("  GEMINI_API_KEY=key1,key2,key3")
+        print("  GEMINI_API_KEY_1=key1")
+        print("  GEMINI_API_KEY_2=key2")
         return
+
+    print(f"Загружено API ключей: {len(API_KEYS)}")
 
     if not os.path.exists(INPUT_DIR):
         print(f"Папка {INPUT_DIR} не найдена!")
@@ -230,17 +285,17 @@ def main():
 
     for idx, (num, filename) in enumerate(image_files, 1):
         img_path = os.path.join(INPUT_DIR, filename)
-        print(f"  [{idx}/{total}] {filename} ...", end=" ", flush=True)
+        print(f"[{idx}/{total}] {filename}", end="", flush=True)
 
         data = extract_qa_from_image(img_path)
 
         if not data or not data.get("question") or not data.get("answers"):
-            print("ПРОПУЩЕНО")
+            print(" → ПРОПУЩЕНО")
             failed.append(filename)
         else:
             formatted = format_output(data, question_num=num)
             append_to_file(formatted, args.output)
-            print(f"OK — {data['question'][:55]}...")
+            print(f" → OK — {data['question'][:55]}...")
 
         if idx < total:
             time.sleep(DELAY_BETWEEN_REQUESTS)
