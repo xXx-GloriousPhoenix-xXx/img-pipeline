@@ -1,0 +1,64 @@
+"Що керує інфраструктурою?"
+1. vSphere
+2. vSAN
+3. vCenter +
+4. Xen
+5. System Center
+6. Hyper-V
+
+"Який варіант забезпечення відмовостійкості показаний на рисунку?"
+1. Fault Tolerance
+2. Erasure coding
+3. Fault Availability
+4. High Availability +
+5. vMotion
+6. Replication
+
+"Який варіант забезпечення відмовостійкості показаний на рисунку?"
+1. Fault Tolerance +
+2. Erasure coding
+3. Fault Availability
+4. Replication
+5. High Availability
+6. vMotion
+
+"Яка технологія створює копії віртуальних машин у іншому фізичному місці, що корисно для захисту даних та відновлення після аварій?"
+1. Fault Tolerance
+2. Erasure coding
+3. Fault Availability
+4. Replication +
+5. High Availability
+6. vMotion
+
+"Який продукт від VMware є реалізацією гіперконвергентної (hyper-converged) інфраструктури?"
+1. SAN
+2. VSAN +
+3. FCoE
+4. VMware NSX
+5. Xen
+
+-56-
+
+"Яка технологія дозволяє перенесення ВМ на інший сервер із зупинкою роботи ВМ, що відбивається на роботі сервісу кінцевого користувача?"
+1. Replication +
+2. Erasure coding
+3. Fault Availability
+4. Fault Tolerance
+5. High Availability
+6. NSX
+
+"Який продукт від VMware є реалізацією гіперконвергентної (hyper-converged) інфраструктури?"
+1. SAN
+2. VSAN +
+3. FCoE
+4. VMware NSX
+5. Xen
+
+-59-
+
+"Що характеризує сучасний додаток?"
+1. Hyperconvergence
+2. Broad network access
+3. Business continuity
+4. On-demand self-service
+5. Scalability +

@@ -1,0 +1,66 @@
+71. "Що забезпечує організаціям покращити цикли випуску програмного забезпечення, якість програмного забезпечення та можливість швидкого отримання зворотного зв'язку щодо розробки продукту?"
+1. Software-defined infrastructure
+2. DevOps
+3. IaaS
+4. Infrastructure as Code
+5. Delivery and Integration +
+
+72. "Що підтримує розробку і впровадження сучасного програмного забезпечення?"
+1. Infrastructure as a service
+2. software as a service
+3. software-defined infrastructure
+4. platform as a service +
+5. delivery and integration
+
+73. "Що підтримує розробку і впровадження сучасного програмного забезпечення?"
+1. Infrastructure as a Service
+2. Software as a Service
+3. Software-defined infrastructure
+4. Platform as a Service
+5. Delivery and Integration +
+
+74. "Що таке процес керування та надання IT-ресурсів за допомогою файлів сценаріїв, а не ручного налаштування ресурсів?"
+1. Integration and Delivery
+2. Оркестрація
+3. DevOps
+4. Інфраструктура як код +
+5. Програмно-визначений підхід
+
+75. "Який етап життєвого циклу хмарного сервісу включає виявлення сервісних активів?"
+1. Service Planning
+2. Service Creation
+3. Service Operation +
+4. Service Termination
+5. Service Deployment
+
+76. "Що програмно інтегрує й упорядковує різні системні функції в автоматизовані робочі процеси для виконання функцій надання послуг вищого рівня та керування?"
+1. Service Catalog
+2. Application Programming Interface
+3. Self service portal
+4. Orchestrator
+5. Service Deployment
+
+77. "Які ви знаєте типи хмарних інтерфейсів?"
+1. Функціональний
+2. управління
+
+78. "Доступ до хмарних служб здійснюється за допомогою веб-сервісів, які в основному засновані на (назвіть)"
+1. REST
+2. мікросервіси
+3. HTTP
+4. SOAP
+
+79. "Доступність сервісу обчислюється за формулою:"
+1. ((Agreed Service Time - Downtime)/Downtime)×100
+2. ((Agreed Service Time - Downtime)/Agreed Service Time)×100 +
+3. ((Agreed Service Time + Downtime)/Agreed Service Time)×100
+4. ((Downtime - Agreed Service Time)/Agreed Service Time)×100
+5. ((Downtime + Agreed Service Time)/Downtime)×100
+
+80. "Що таке відмовостійкість (fault tolerance)?"
+1. Здатність системи швидко передавати дані
+2. Здатність системи швидко відновлювати роботу після збоїв
+3. Здатність системи до розподіленої обробки даних
+4. Здатність системи забезпечити високі значення RPO та RTO
+5. Здатність системи продовжувати функціонування в разі відмови деяких компонентів системи +
+

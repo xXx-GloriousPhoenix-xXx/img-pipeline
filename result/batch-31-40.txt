@@ -1,0 +1,71 @@
+"Щоб зберегти стан роботи віртуальної машини використовують"
+1. Snapshot ?
+2. Файл <vmname>.vmdk
+3. Файл <vmname>.log
+4. Архів
+5. Образ ISO
+
+"Назвіть, що зберігається у знімку ВМ (Snapshot)?"
+1. коф файли
+2. стан сховища
+3. стан ВМ +
+
+"На рисунку показано:"
+1. Клас 1
+2. Клас 2
+3. Тип 1 +
+4. Тип 2
+5. Клас 3
+
+"На рисунку показано:"
+1. Віртуалізація мережі
+2. Віртуалізація обчислень
+3. Віртуалізація сховища +
+4. IaaS
+5. PaaS
+6. Приватна хмара
+7. SaaS
+
+"Яка з технологій є надбудовою рівня 2 OSI (Layer 2 overlay), що побудована поверх мережі рівня 3 OSI?"
+1. Stretched VLAN
+2. Public Virtual LAN
+3. VLAN
+4. Virtual Extensible LAN +
+5. Private Virtual LAN
+
+"Що є джерелом на рисунку?"
+1. Rapid elasticity
+2. Community Cloud
+3. Resource pool +
+4. Private Cloud
+5. Сховище
+
+"На рисунку показана"
+1. Сервісні моделі SaaS, PaaS, IaaS
+2. Суттєві характеристики хмарних обчислень
+3. Resource Pooling
+4. Community Cloud Computing model
+5. Software-defined infrastructure +
+
+"Що є атрибутом програмно-визначеної інфраструктури?"
+1. Automated, policy-driven provisioning including data protection +
+2. Broad network access
+3. IaaS
+4. Cloud Computing Service Deployment model
+5. SaaS
+
+"Вкажіть функцію контролера Software-defined storage"
+1. Віртуалізація
+2. Storage elasticity
+3. Measured storage service
+4. Storage Discovery +
+5. On-demand self-service
+6. Контейнеризація
+
+"Що виконує цю функцію?"
+1. Контролер Software-defined storage +
+2. Гіпервізор сховища
+3. Віртуальна машина
+4. Software-defined infrastructure
+5. SDN controller
+

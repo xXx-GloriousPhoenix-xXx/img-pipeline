@@ -25,17 +25,24 @@ INPUT_DIR = "./media"
 OUTPUT_FILE = "./data.txt"
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
-DELAY_BETWEEN_REQUESTS = 5  # секунд между запросами (≈12 RPM, лимит 15)
-DELAY_AFTER_429 = 90        # секунд ожидания после rate limit
-MAX_RETRIES = 5             # максимум попыток на один файл
+# Список доступных моделей для ротации (от быстрой/дешевой к более мощным)
+MODELS = [
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro"
+]
+
+DELAY_BETWEEN_REQUESTS = 5
+DELAY_AFTER_429 = 90
+MAX_RETRIES = 5
 
 PROMPT = """На зображенні знаходиться питання тесту та кілька варіантів відповіді (зазвичай у вигляді таблиці Excel).
 
 Твоє завдання:
 1. Витягни точний текст питання (він зазвичай у верхній частині або в стовпці B першого рядка).
-2. Витягни всі варіанти відповідей з їх номерами.
+2. Витягни всі варіанти відповідей з их номерами.
 3. Визнач правильну відповідь — вона зазвичай позначена червоною цифрою праворуч (у стовпці "Номер Вашої відповіді"), яка збігається з номером правильного варіанту.
 
 Поверни результат СТРОГО у форматі JSON без будь-яких додаткових пояснень:
@@ -65,8 +72,12 @@ def get_mime_type(image_path):
     return "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
 
 
-def call_api(image_path):
-    payload = json.dumps({
+def call_api_with_fallback(image_path):
+    """
+    Делает запрос к API. Если ловит 429, переключается на следующую модель.
+    Если все модели исчерпаны, ждет DELAY_AFTER_429 и пробует снова с первой модели.
+    """
+    payload_dict = {
         "contents": [{
             "parts": [
                 {"inline_data": {"mime_type": get_mime_type(image_path),
@@ -75,79 +86,87 @@ def call_api(image_path):
             ]
         }],
         "generationConfig": {"temperature": 0, "maxOutputTokens": 1024}
-    }).encode("utf-8")
+    }
+    
+    # Чтобы гарантировать JSON от Gemini 2.5/1.5, просим structured output
+    payload_dict["generationConfig"]["responseMimeType"] = "application/json"
+    
+    payload = json.dumps(payload_dict).encode("utf-8")
 
-    req = urllib.request.Request(
-        f"{API_URL}?key={GEMINI_API_KEY}",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST"
-    )
-    with urllib.request.urlopen(req) as resp:
-        result = json.loads(resp.read().decode("utf-8"))
-        return result["candidates"][0]["content"]["parts"][0]["text"].strip()
+    current_model_idx = 0
+    retries = 0
 
-
-def fix_truncated_json(text):
-    """Пытается починить обрезанный JSON — закрывает незакрытые структуры."""
-    text = re.sub(r',\s*$', '', text.rstrip())
-    opens = text.count('{') - text.count('}')
-    arrays = text.count('[') - text.count(']')
-    text += ']' * arrays + '}' * opens
-    return text
-
-
-def extract_qa_from_image(image_path):
-    for attempt in range(1, MAX_RETRIES + 1):
+    while retries < MAX_RETRIES:
+        model_name = MODELS[current_model_idx]
+        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+        
+        req = urllib.request.Request(
+            f"{api_url}?key={GEMINI_API_KEY}",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        
         try:
-            text = call_api(image_path)
-            text = re.sub(r"^```json\s*", "", text)
-            text = re.sub(r"\s*```$", "", text)
-            return json.loads(text)
-
+            with urllib.request.urlopen(req) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+                return result["candidates"][0]["content"]["parts"][0]["text"].strip()
+                
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8")
+            
+            # Если поймали лимит запросов (Rate Limit)
             if e.code == 429:
-                print(f"\n    [429] Rate limit — ждём {DELAY_AFTER_429}с "
-                      f"(попытка {attempt}/{MAX_RETRIES})", end="", flush=True)
-                for _ in range(DELAY_AFTER_429):
-                    time.sleep(1)
-                    print(".", end="", flush=True)
-                print()
-            elif e.code == 503:
-                wait = 15 * attempt
-                print(f"\n    [503] Перегружен — ждём {wait}с "
-                      f"(попытка {attempt}/{MAX_RETRIES})...", flush=True)
-                time.sleep(wait)
+                print(f"\n    [HTTP 429] На модели {model_name} закончился лимит.")
+                
+                # Переходим к следующей модели в списке
+                if current_model_idx < len(MODELS) - 1:
+                    current_model_idx += 1
+                    print(f"    Переключаемся на следующую модель: {MODELS[current_model_idx]}...")
+                    time.sleep(2) # небольшая пауза перед переключением
+                    continue
+                else:
+                    # Если все модели из списка выдали 429
+                    retries += 1
+                    current_model_idx = 0 # Сбрасываем на первую модель для следующей попытки
+                    if retries < MAX_RETRIES:
+                        print(f"    [!] Все модели исчерпали лимит. Ожидаем {DELAY_AFTER_429} секунд (Попытка {retries}/{MAX_RETRIES})...")
+                        time.sleep(DELAY_AFTER_429)
+                    continue
             else:
-                print(f"\n    [HTTP {e.code}] {body[:150]}")
+                # Другие HTTP ошибки (например, 400, 403, 500) не завязаны на лимиты — выходим
+                print(f"\n    [HTTP {e.code}] {body[:200]}")
                 return None
-
-        except json.JSONDecodeError:
-            print(f"\n    [JSON] Обрезан — пробуем починить...", end=" ", flush=True)
-            try:
-                text2 = call_api(image_path)
-                text2 = re.sub(r"^```json\s*", "", text2)
-                text2 = re.sub(r"\s*```$", "", text2)
-                result = json.loads(fix_truncated_json(text2))
-                print("OK")
-                return result
-            except Exception:
-                print(f"не удалось (попытка {attempt}/{MAX_RETRIES})")
-            if attempt >= MAX_RETRIES:
-                return None
-
         except Exception as e:
-            print(f"\n    [ERR] {e}")
-            if attempt < MAX_RETRIES:
-                time.sleep(10)
-
-    print(f"\n    Все {MAX_RETRIES} попытки исчерпаны")
+            print(f"\n    [ERR в call_api] {e}")
+            return None
+            
+    print("\n    [ERR] Достигнут максимум попыток. Не удалось получить ответ.")
     return None
 
 
-def format_output(data):
-    lines = [f'"{data["question"]}"']
+def extract_qa_from_image(image_path):
+    try:
+        text = call_api_with_fallback(image_path)
+        if not text:
+            return None
+            
+        # Очищаем от возможных markdown-тегов (хотя responseMimeType должен вернуть чистый JSON)
+        text = re.sub(r"^```json\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+        return json.loads(text)
+
+    except json.JSONDecodeError:
+        print(f"\n    [JSON] Модель вернула невалидный JSON — пропускаем")
+        return None
+    except Exception as e:
+        print(f"\n    [ERR] {e}")
+        return None
+
+
+def format_output(data, question_num=None):
+    prefix = f"{question_num}. " if question_num is not None else ""
+    lines = [f'{prefix}"{data["question"]}"']
     correct = data.get("correct_num")
     for ans in data["answers"]:
         marker = " +" if ans["num"] == correct else ""
@@ -156,7 +175,6 @@ def format_output(data):
 
 
 def append_to_file(text, output_file):
-    """Дописывает один результат в файл сразу после получения."""
     with open(output_file, "a", encoding="utf-8") as f:
         f.write(text + "\n\n")
 
@@ -171,7 +189,6 @@ def main():
                         metavar="FILE", help=f"файл вывода (по умолчанию: {OUTPUT_FILE})")
     args = parser.parse_args()
 
-    # Создаём файл (и папку) если не существует
     output_dir = os.path.dirname(args.output)
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -188,7 +205,6 @@ def main():
         print(f"Папка {INPUT_DIR} не найдена!")
         return
 
-    # Собираем и фильтруем файлы по диапазону
     image_files = []
     for f in os.listdir(INPUT_DIR):
         if f.startswith("image") and f.lower().endswith((".jpeg", ".jpg", ".png")):
@@ -222,8 +238,8 @@ def main():
             print("ПРОПУЩЕНО")
             failed.append(filename)
         else:
-            formatted = format_output(data)
-            append_to_file(formatted, args.output)  # ← сразу пишем в файл
+            formatted = format_output(data, question_num=num)
+            append_to_file(formatted, args.output)
             print(f"OK — {data['question'][:55]}...")
 
         if idx < total:
